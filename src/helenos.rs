@@ -232,6 +232,7 @@ missing! {
     pub enum tcp_listener_t {}
 }
 
+#[link(name = "atomic")]
 #[link(name = "c")]
 #[link(name = "posix")]
 #[link(name = "inet")]

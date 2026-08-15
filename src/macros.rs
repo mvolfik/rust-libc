@@ -249,6 +249,151 @@ macro_rules! s_no_extra_traits {
     );
 }
 
+/// Like [`s`], but also generates a `Default` impl for every struct in the block.
+macro_rules! s_with_default {
+    ($(
+        $(#[$attr:meta])*
+        $pub:vis $t:ident $i:ident { $($field:tt)* }
+    )*) => ($(
+        s_with_default!(it: $(#[$attr])* $pub $t $i { $($field)* });
+    )*);
+
+    (it: $(#[$attr:meta])* $pub:vis union $i:ident { $($field:tt)* }) => (
+        compile_error!(
+            "unions cannot derive extra traits, use s_no_extra_traits_with_default instead"
+        );
+    );
+
+    (it: $(#[$attr:meta])* $pub:vis struct $i:ident { $($field:tt)* }) => (
+        struct_with_default! {
+            attrs: {
+                #[repr(C)]
+                #[::core::prelude::v1::derive(
+                    ::core::clone::Clone,
+                    ::core::marker::Copy,
+                    ::core::fmt::Debug,
+                )]
+                #[cfg_attr(
+                    feature = "extra_traits",
+                    ::core::prelude::v1::derive(PartialEq, Eq, Hash)
+                )]
+                #[allow(deprecated)]
+            }
+            $(#[$attr])* $pub struct $i { $($field)* }
+        }
+    );
+}
+
+/// Emit a struct with the given derive attributes plus a generated `Default` impl.
+///
+/// Fields default to `Default::default()`. A field whose default can't be derived must carry
+/// `#[custom_default(EXPR)]` as its *first* attribute, and `EXPR` is used instead.
+///
+/// This works by scanning each field for `#[custom_default]` attributes. If one exists, the
+/// attribute's contents are added to `processed_field_defaults` and will be used in the expansion
+/// for `Default`. If it does not exist, `Default::default()` is used instead. In either case, the
+/// field is added to `processed_fields` with `#[custom_default]` stripped if necessary, and
+/// `struct_with_default` is invoked again with the remaining fields.
+macro_rules! struct_with_default {
+    // entry; `attrs` is the attribute block the caller wants on the struct (repr, derives, etc.),
+    // which is merged with the struct's own attributes.
+    (
+        attrs: { $($attrs:tt)* }
+        $(#[$attr:meta])*
+        $vis:vis struct $name:ident { $($body:tt)* }
+    ) => {
+        struct_with_default! {
+            @struct
+            attrs: { $($attrs)* $(#[$attr])* }
+            vis: { $vis }
+            name: { $name }
+            processed_fields: { }
+            processed_field_defaults: { }
+            remaining_fields: { $($body)* }
+        }
+    };
+
+    // field led by #[custom_default(...)]
+    (
+        @struct
+        attrs: { $($attrs:tt)* }
+        vis: { $vis:vis }
+        name: { $name:ident }
+        processed_fields: { $($processed_fields:tt)* }
+        processed_field_defaults: { $($processed_field_defaults:tt)* }
+        remaining_fields: {
+            #[custom_default($default:expr)]
+            $(#[$fattr:meta])*
+            $fvis:vis $fname:ident: $fty:ty,
+            $($tail:tt)*
+        }
+    ) => {
+        struct_with_default! {
+            @struct
+            attrs: { $($attrs)* }
+            vis: { $vis }
+            name: { $name }
+            processed_fields: { $($processed_fields)* $(#[$fattr])* $fvis $fname: $fty, }
+            processed_field_defaults: {
+                $($processed_field_defaults)*
+                $(#[$fattr])* $fname: $default,
+            }
+            remaining_fields: { $($tail)* }
+        }
+    };
+
+    // plain field
+    (
+        @struct
+        attrs: { $($attrs:tt)* }
+        vis: { $vis:vis }
+        name: { $name:ident }
+        processed_fields: { $($processed_fields:tt)* }
+        processed_field_defaults: { $($processed_field_defaults:tt)* }
+        remaining_fields: {
+            $(#[$fattr:meta])*
+            $fvis:vis $fname:ident: $fty:ty,
+            $($tail:tt)*
+        }
+    ) => {
+        struct_with_default! {
+            @struct
+            attrs: { $($attrs)* }
+            vis: { $vis }
+            name: { $name }
+            processed_fields: { $($processed_fields)* $(#[$fattr])* $fvis $fname: $fty, }
+            processed_field_defaults: {
+                $($processed_field_defaults)*
+                $(#[$fattr])* $fname: ::core::default::Default::default(),
+            }
+            remaining_fields: { $($tail)* }
+        }
+    };
+
+    // done
+    (
+        @struct
+        attrs: { $($attrs:tt)* }
+        vis: { $vis:vis }
+        name: { $name:ident }
+        processed_fields: { $($processed_fields:tt)* }
+        processed_field_defaults: { $($processed_field_defaults:tt)* }
+        remaining_fields: { }
+    ) => {
+        $($attrs)*
+        $vis struct $name { $($processed_fields)* }
+
+        impl ::core::default::Default for $name {
+            // Field attributes (`#[cfg]`, doc comments) get forwarded to the initializer too.
+            // Docs are harmless there but trip the lint, so silence it.
+            #[allow(unused_doc_comments)]
+            fn default() -> Self {
+                Self { $($processed_field_defaults)* }
+            }
+        }
+    };
+}
+
 /// Create an uninhabited type that can't be constructed. It implements `Debug`, `Clone`,
 /// and `Copy`, but these aren't meaningful for extern types so they should eventually
 /// be removed.
